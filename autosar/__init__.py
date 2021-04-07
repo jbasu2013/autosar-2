@@ -6,14 +6,11 @@ import autosar.datatype
 import autosar.constant
 import autosar.signal
 import autosar.package
-import autosar.rte
 import autosar.builder
 import autosar.port
 import autosar.element
 from abc import (ABC,abstractmethod)
 import autosar.base
-import autosar.bsw.com
-import autosar.bsw.os
 import autosar.util
 
 import ntpath
