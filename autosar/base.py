@@ -325,6 +325,9 @@ class SymbolProps:
 
 
 #Exceptions
+class InvalidReference(ValueError):
+    pass
+
 class InvalidUnitRef(ValueError):
     pass
 
@@ -377,4 +380,10 @@ class InvalidBehaviorRef(ValueError):
     pass
 
 class InvalidSwAddrmethodRef(ValueError):
+    pass
+
+class InvalidDataTypeMappingRef(ValueError):
+    pass
+
+class InvalidImplementationDataType(ValueError):
     pass
