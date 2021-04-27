@@ -1,0 +1,2 @@
+class InvalidTaskName(ValueError):
+    pass

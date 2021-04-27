@@ -27,6 +27,8 @@ class ModeGroupInstance(Instance):
             result['ModeTable'][key]=value.toDict()
         return result
 
+    def find(self, modeName):
+        return self.modeTable.get(modeName, None)
 
 class ModeInstance(Instance):
     def __init__(self, name, value = None, id = None):
@@ -71,17 +73,22 @@ class ComponentInstance:
 
     def findPortInstance(self, portName):
         return self.portTable.get(portName, None)
-    
+
     def findPortPrototype(self, portName):
         portInstance = self.portTable.get(portName, None)
-        if portInstance is not None:            
+        if portInstance is not None:
             return portInstance.portPrototype
         return None
-    
+
+    def findRunnableInstance(self, runnableName):
+        return self.runnableTable.get(runnableName, None)
+
     def insertRunnable(self, runnableInstance):
         assert(isinstance(runnableInstance, RunnableInstance))
         assert(runnableInstance.name not in self.runnableTable)
         self.runnableTable[runnableInstance.name] = (runnableInstance)
+
+
 
 
 class ApplicationSoftwareComponentInstance(ComponentInstance):
@@ -211,7 +218,7 @@ class PortInstance(Instance):
             self.providePortConnectorList = None
         else:
             self.requirePortConnectorList = None
-            self.providePortConnectorList = []        
+            self.providePortConnectorList = []
 
 class SenderReceiverPortInstance(PortInstance):
     def __init__(self, portPrototype, dataElementPrototype, isProvidePort, id = None):
@@ -281,15 +288,59 @@ class RunnableInstance(Instance):
     RTE Runnable
     """
     def __init__(self, runnablePrototype, parent, id = None):
+        super().__init__(runnablePrototype.name, id)
         self.parent = parent
         self.runnablePrototype = runnablePrototype
         self.name = runnablePrototype.name
         self.symbol = runnablePrototype.symbol
         self.functionPrototype = C.function(self.symbol, 'void')
         self.dataElementAccessList=[]
-        self.operationAccessList=[]    
-        self.triggerList=[]        
-    
+        self.operationAccessList=[]
+        self.triggerList=[]
+
     def toDict(self):
-        result = {'name': self.name}
+        result = {'name': self.name, '$id': self.id }
+        if len(self.triggerList) > 0:
+             result['triggerList']=[]
+             for trigger in self.triggerList:
+                 result['triggerList'].append(trigger.toDict())
         return result
+
+    def insertEvent(self, eventTrigger):
+        self.triggerList.append(eventTrigger)
+
+class ModeSwitchEventTrigger(Instance):
+    def __init__(self, event, modeProvidePort, modeGroupInstance, id = None):
+        super().__init__(None, id)
+        modeInstRef = event.modeInstRef.modeDeclarationRef
+        parts = autosar.base.splitRef(modeInstRef)
+        self.modeInstance = modeGroupInstance.find(parts[-1])
+        if self.modeInstance is None:
+            raise ValueError("Unrecognized mode name detected: "+parts[-1])
+        self.modeProvidePort = modeProvidePort
+        self.modeGroupInstance = modeGroupInstance
+        if event.activationType == 'ON-ENTRY':
+            self.activationType = 'OnEntry'
+        elif event.activationType == 'ON-EXIT':
+            self.activationType = 'OnExit'
+        else:
+            raise RuntimeError('Event activationType must either be "ON-ENTRY" or "ON-EXIT"')
+        self.name = '_'.join([modeProvidePort.parent.name, modeProvidePort.name, modeGroupInstance.name, self.modeInstance.name])
+
+
+    def toDict(self):
+        result = {'$id': self.id, 'triggerType': 'ModeSwitchEvent',
+                    'modeGroupInstanceRef': self.modeGroupInstance.id, 'activationType': self.activationType,
+                    'modeInstanceName': self.modeInstance.name }
+        return result
+
+
+class TimingEventTrigger(Instance):
+    def __init__(self, event, id = None):
+        super().__init__(None, id)
+        self.period = event.period
+
+    def toDict(self):
+        result = {'$id': self.id, 'triggerType': 'TimingEvent', 'period': self.period }
+        return result
+

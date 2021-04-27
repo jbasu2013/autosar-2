@@ -1,7 +1,9 @@
 import sys
+import autosar.base
 import autosar.component
 from collections import namedtuple
 import amber.rte.base
+import amber.os.base
 
 TARGET_TYPE_COMPONENT = 0
 TARGET_TYPE_IMPLEMENTATION_DATATYPE = 1
@@ -16,7 +18,8 @@ class Partition:
         self.componentTable = {} #Component instances
         self.dataTypeTable = {}
         self.applicationDataTypeTable = {}
-        self.modeGroupTable = {}        
+        self.modeGroupTable = {}
+        self.taskTable = {}
         assert(isinstance(ws, autosar.Workspace))
         self.ws = ws
         self.next_id = 0
@@ -60,7 +63,7 @@ class Partition:
         portProtoType1 = port1.portPrototype
         portProtoType2 = port2.portPrototype
         providePort=None
-        requirePort=None        
+        requirePort=None
         if isinstance(portProtoType1, autosar.port.RequirePort) and isinstance(portProtoType2, autosar.port.ProvidePort):
             requirePort, providePort = port1, port2
         elif isinstance(portProtoType1, autosar.port.ProvidePort) and isinstance(portProtoType2, autosar.port.RequirePort):
@@ -70,7 +73,7 @@ class Partition:
         else:
             raise ValueError('cannot create assembly connector between two provide ports')
         self._createConnectorInternal(providePort, requirePort)
-    
+
     def findPort(self, portRef):
         parts = autosar.base.splitRef(portRef)
         if len(parts) == 2:
@@ -82,31 +85,49 @@ class Partition:
             raise autosar.base.InvalidReference(portRef)
         return None
 
-#    def autoConnect(self):
-#       """
-#       Attemts to create compatible connectors between components
-#       """
-#       require_port_list = [] #list of RequirePort
-#       provide_port_list = [] #list of ProvidePort
-#       for rte_comp in self.components:
-#          for rte_port in rte_comp.requirePorts:
-#             require_port_list.append(rte_port)
-#          for rte_port in rte_comp.providePorts:
-#             provide_port_list.append(rte_port)
+    def createOsTask(self, name):
+        """
+        Creates a new OS task and adds it to the task table
+        """
+        task = amber.os.base.Task(name)
+        self.taskTable[name] = task
 
-#       for require_port in require_port_list:
-#          provide_port = self._findCompatibleProvidePort(require_port, provide_port_list)
-#          if provide_port is not None:
-#             self._createConnectorInternal(provide_port, require_port)
+    def mapRunnable(self, runnableRef, taskName):
+        """
+        Map runnable to OS task
+        """
+        task = self.findOsTask(taskName)
+        if task is None:
+            raise ValueError('Invalid task name: "{}"'.format(taskName))
+        parts = autosar.base.splitRef(runnableRef)
+        if len(parts) == 2:
+            componentName, runnableName = parts[0], parts[1]
+            componentInstance = self.componentTable.get(componentName, None)
+            if componentInstance is not None:
+                runnableInstance = componentInstance.findRunnableInstance(runnableName)
+                if runnableInstance is None:
+                    raise autosar.base.InvalidRunnableRef(runnableRef)
+                for trigger in runnableInstance.triggerList:
+                    if isinstance(trigger, amber.rte.base.ModeSwitchEventTrigger):
+                        event = self._createModeSwitchEventFromTrigger(task, trigger)
+                    elif isinstance(trigger, amber.rte.base.TimingEventTrigger):
+                        event = self._createTaskTimerEventFromTrigger(task, trigger)
+                    else:
+                        raise NotImplementedError(str(type(trigger)))
+                return
+        raise autosar.base.InvalidReference(runnableRef)
 
-#    def unconnectedPorts(self):
-#       """
-#       Returns a generator that yields all unconnected ports of this partition
-#       """
-#       for component in self.components:
-#          for port in component.requirePorts+component.providePorts:
-#             if len(port.connectors)==0:
-#                yield port
+    def findOsTask(self, taskName):
+        task = self.taskTable.get(taskName, None)
+        if task is not None:
+            return task
+        raise amber.base.InvalidTaskName(taskName)
+
+
+    def processComponents(self):
+        for componentInstance in self.componentTable.values():
+            componentPrototype = componentInstance.componentPrototype
+            self._processRunnables(componentInstance, componentPrototype.behavior)
 
     def _apply(self, reference, targetType, name = None):
         """
@@ -134,7 +155,7 @@ class Partition:
             if reference not in self.dataTypeTable:
                 self._createImplementationDataTypeInstance(prototype)
         else:
-            raise NotImplementedError(type(prototype))        
+            raise NotImplementedError(type(prototype))
         return prototype
 
     def _incrementId(self):
@@ -191,7 +212,7 @@ class Partition:
             initialModeName = initialMode.name
         else:
             initialModeName = None
-        modeGroupInstance = amber.rte.base.ModeGroupInstance(modeDeclarationGroup.name, initialModeName)
+        modeGroupInstance = amber.rte.base.ModeGroupInstance(modeDeclarationGroup.name, initialModeName, self._incrementId())
         for modeDeclaration in modeDeclarationGroup.modeDeclarations:
             modeInstance = amber.rte.base.ModeInstance(modeDeclaration.name, modeDeclaration.value)
             modeGroupInstance.modeTable[modeDeclaration.name] = modeInstance
@@ -199,8 +220,8 @@ class Partition:
 
     def _processComponentBehavior(self, componentInstance, behavior):
         self._processDataTypeMappingRefs(componentInstance, behavior)
-        self._processRunnables(componentInstance, behavior)
-    
+
+
     def _processDataTypeMappingRefs(self, componentInstance, behavior):
         for dataTypeMappingRef in behavior.dataTypeMappingRefs:
             dataTypeMapping = self.ws.find(dataTypeMappingRef)
@@ -222,6 +243,12 @@ class Partition:
         for runnable in behavior.runnables:
             runnableInstance = amber.rte.base.RunnableInstance(runnable, componentInstance, self._incrementId())
             componentInstance.insertRunnable(runnableInstance)
+            for event in behavior.events:
+                if event.startOnEventRef == runnable.ref:
+                    eventTrigger = self._createEventTrigger(componentInstance, event)
+                    assert eventTrigger is not None
+                    runnableInstance.insertEvent(eventTrigger)
+
 
     def _createImplementationDataTypeInstance(self, prototype):
         assert(isinstance(prototype, autosar.datatype.ImplementationDataType))
@@ -260,34 +287,47 @@ class Partition:
                 attributes.skipGeneration = True
         return attributes
 
-
-#    def _analyzePortRef(self, portRef):
-#       parts=autosar.base.splitRef(portRef)
-#       if len(parts)==2:
-#          #assume format 'componentName/portName' with ComponentType role set
-#          port=None
-#          for component in self.components:
-#             if component.name == parts[0]:
-#                for port in component.requirePorts + component.providePorts:
-#                   if parts[1] == port.name:
-#                      return port
-#       return None
-
     def _createConnectorInternal(self, providePortInstance, requirePortInstance):
         providePortInstance.requirePortConnectorList.append(requirePortInstance)
         requirePortInstance.providePortConnectorList.append(providePortInstance)
-#      if connectorName in self.assemblyConnectorMap:
-#         raise ValueError('connector "%s" already exists'%connectorName)
-#      self.assemblyConnectorMap[connectorName]=(provide_port,require_port)
-#      provide_port.connectors.append(require_port)
-#      require_port.connectors.append(provide_port)
 
-#    def _findCompatibleProvidePort(self, require_port, provide_port_list):
-#       require_port_interface = self.ws.find(require_port.ar_port.portInterfaceRef)
-#       if require_port_interface is None: raise ValueError("Invalid port interface ref: %s"%require_port.ar_port.portInterfaceRef)
-#       for provide_port in provide_port_list:
-#          provide_port_interface = self.ws.find(provide_port.ar_port.portInterfaceRef)
-#          if provide_port_interface is None: raise ValueError("Invalid port interface ref: %s"%provide_port.ar_port.portInterfaceRef)
-#          if require_port_interface==provide_port_interface and (require_port.ar_port.name == provide_port.ar_port.name):
-#             return provide_port
-#       return None
+
+    def _createEventTrigger(self, componentInstance, event):
+        assert(isinstance(event, autosar.behavior.Event))
+        if isinstance(event, autosar.behavior.ModeSwitchEvent):
+            trigger = self._createModeSwitchEventTrigger(componentInstance, event)
+
+        elif isinstance(event, autosar.behavior.TimingEvent):
+            trigger = amber.rte.base.TimingEventTrigger(event, self._incrementId())
+        else:
+            raise NotImplementedError(type(event))
+        return trigger
+
+    def _createModeSwitchEventTrigger(self, componentInstance, event):
+        requirePortPrototypeRef = event.modeInstRef.requirePortPrototypeRef
+        assert(requirePortPrototypeRef is not None)
+        parts = autosar.base.splitRef(requirePortPrototypeRef)
+        portInstance = componentInstance.findPortInstance(parts[-1])
+        if portInstance is None:
+            raise autosar.base.InvalidPortRef(requirePortPrototypeRef)
+        if len(portInstance.providePortConnectorList)>1:
+            raise RuntimeError("R-Port {0.name}.{1.name} is connected to multiple providers".format(componentInstance, portInstance))
+        elif len(portInstance.providePortConnectorList)==1:
+            # = event.modeInstRef.modeDeclarationGroupPrototypeRef
+            #modeGroupInstance = self.modeGroupTable.get(modeGroupRef, None)
+            #if modeGroupInstance:
+
+            modeProvidePort = portInstance.providePortConnectorList[0]
+            modeGroupRef = modeProvidePort.modeGroupPrototype.typeRef
+            modeGroupInstance = self.modeGroupTable.get(modeGroupRef, None)
+            if modeGroupInstance is None:
+                raise autosar.base.InvalidModeGroupRef(modeGroupRef)
+            return amber.rte.base.ModeSwitchEventTrigger(event, modeProvidePort, modeGroupInstance, self._incrementId())
+
+    def _createTaskTimerEventFromTrigger(self, task, trigger):
+        offset = 0 #TODO: Add support for offset later
+        return task.createTimerEvent(offset, trigger.period)
+
+    def _createModeSwitchEventFromTrigger(self, task, trigger):
+        eventName = '_'.join(['Rte_Ev', trigger.activationType, task.name, trigger.name])
+        return task.createEvent(eventName)
