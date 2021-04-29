@@ -7,14 +7,14 @@ class ComponentGenerator:
     def __init__(self, partition):
         self.partition = partition
 
-    def generateHeaders(self, destDir = '.'):
+    def genHeaders(self, destDir = '.'):
         """
         Generates RTE Component headers
         """
         for componentInstance in self.partition.componentTable.values():
             self._generateRteComponentHeader(componentInstance, destDir)
             self._generateRteComponentTypeHeader(componentInstance, destDir)
-    
+
     def _generateRteComponentHeader(self, componentInstance, destDir):
         fileName = 'Rte_{0.name}.h'.format(componentInstance)
         filePath = os.path.join(destDir, fileName)
